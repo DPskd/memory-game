@@ -8,16 +8,13 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocket.Server({ server });
-
-// Game rooms storage
 const rooms = new Map();
 const waitingPlayers = new Set();
 
-// Generate random room code
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code = '';
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 4; i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return code;
@@ -30,22 +27,12 @@ wss.on('connection', (ws) => {
 
   ws.on('message', (message) => {
     let msg;
-    try {
-      msg = JSON.parse(message);
-    } catch (e) {
-      ws.send(JSON.stringify({ type: 'error', msg: 'Invalid JSON' }));
-      return;
-    }
+    try { msg = JSON.parse(message); } catch (e) { return; }
 
     switch (msg.type) {
       case 'create_room':
         const roomCode = generateRoomCode();
-        const room = {
-          code: roomCode,
-          players: [ws],
-          deck: null,
-          gameStarted: false
-        };
+        const room = { code: roomCode, players: [ws], gameStarted: false };
         rooms.set(roomCode, room);
         playerRoom = roomCode;
         playerIndex = 0;
@@ -55,30 +42,17 @@ wss.on('connection', (ws) => {
 
       case 'join_room':
         const roomToJoin = rooms.get(msg.roomCode);
-        if (!roomToJoin) {
-          ws.send(JSON.stringify({ type: 'error', msg: 'room_not_found' }));
-          return;
-        }
-        if (roomToJoin.players.length >= 2) {
-          ws.send(JSON.stringify({ type: 'error', msg: 'room_full' }));
-          return;
-        }
-        if (roomToJoin.gameStarted) {
-          ws.send(JSON.stringify({ type: 'error', msg: 'game_started' }));
-          return;
-        }
+        if (!roomToJoin) { ws.send(JSON.stringify({ type: 'error', msg: 'room_not_found' })); return; }
+        if (roomToJoin.players.length >= 2) { ws.send(JSON.stringify({ type: 'error', msg: 'room_full' })); return; }
         roomToJoin.players.push(ws);
         playerRoom = msg.roomCode;
         playerIndex = 1;
         ws.send(JSON.stringify({ type: 'room_joined', roomCode: msg.roomCode }));
-        
-        // Start game
         roomToJoin.players.forEach((p, idx) => {
           p.send(JSON.stringify({ type: 'match_found', roomCode: msg.roomCode }));
           p.send(JSON.stringify({ type: 'game_start', yourIndex: idx }));
         });
         roomToJoin.gameStarted = true;
-        console.log(`Game started in room ${msg.roomCode}`);
         break;
 
       case 'find_match':
@@ -86,31 +60,18 @@ wss.on('connection', (ws) => {
           const opponent = Array.from(waitingPlayers)[0];
           waitingPlayers.delete(opponent);
           const newRoomCode = generateRoomCode();
-          const newRoom = {
-            code: newRoomCode,
-            players: [opponent, ws],
-            deck: null,
-            gameStarted: false
-          };
+          const newRoom = { code: newRoomCode, players: [opponent, ws], gameStarted: false };
           rooms.set(newRoomCode, newRoom);
-          
-          ws.send(JSON.stringify({ type: 'match_found', roomCode: newRoomCode }));
-          opponent.send(JSON.stringify({ type: 'match_found', roomCode: newRoomCode }));
-          
           newRoom.players.forEach((p, idx) => {
+            p.send(JSON.stringify({ type: 'match_found', roomCode: newRoomCode }));
             p.send(JSON.stringify({ type: 'game_start', yourIndex: idx }));
           });
           newRoom.gameStarted = true;
           playerRoom = newRoomCode;
           playerIndex = 1;
-          
-          // Fix opponent's state
-          newRoom.players[0].playerRoom = newRoomCode;
-          newRoom.players[0].playerIndex = 0;
         } else {
           waitingPlayers.add(ws);
           ws.send(JSON.stringify({ type: 'searching' }));
-          console.log('Player waiting for match');
         }
         break;
 
@@ -124,12 +85,7 @@ wss.on('connection', (ws) => {
           const room = rooms.get(playerRoom);
           room.players.forEach((p, idx) => {
             if (idx !== playerIndex) {
-              p.send(JSON.stringify({
-                type: 'game_state',
-                deck: msg.deck,
-                gridSize: msg.gridSize,
-                emojiSet: msg.emojiSet
-              }));
+              p.send(JSON.stringify({ type: 'game_state', deck: msg.deck, gridSize: msg.gridSize, emojiSet: msg.emojiSet }));
             }
           });
         }
@@ -144,6 +100,7 @@ wss.on('connection', (ws) => {
                 type: 'flip_card',
                 cardIndex: msg.cardIndex,
                 phase: msg.phase,
+                secondIndex: msg.secondIndex,
                 scores: msg.scores,
                 curPlayer: msg.curPlayer
               }));
@@ -166,22 +123,15 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     console.log('Client disconnected');
     waitingPlayers.delete(ws);
-    
     if (playerRoom && rooms.has(playerRoom)) {
       const room = rooms.get(playerRoom);
-      room.players.forEach((p, idx) => {
+      room.players.forEach((p) => {
         if (p !== ws && p.readyState === WebSocket.OPEN) {
           p.send(JSON.stringify({ type: 'opponent_left' }));
         }
       });
       rooms.delete(playerRoom);
-      console.log(`Room ${playerRoom} deleted`);
     }
-  });
-
-  ws.on('error', (error) => {
-    console.error('WebSocket error:', error);
-    waitingPlayers.delete(ws);
   });
 });
 
