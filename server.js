@@ -11,6 +11,45 @@ const wss = new WebSocket.Server({ server });
 const rooms = new Map();
 const waitingPlayers = new Set();
 
+const EMOJI_SETS = {
+  food: ['🍕','🍔','🌮','🍣','🍩','🎂','🍦','🥑','🍋','🍇','🍓','🥐','🍜','🌯','🧇','🫐','🥪','🍱','🧆','🥨','🍡','🍤','🥧','🧃','🥟','🍙','🍛','🥯','🌽','🧀','🍫','🍰'],
+  animals: ['🐱','🐶','🦊','🐼','🐨','🦁','🐯','🦋','🐧','🐬','🦒','🦓','🦄','🦕','🐙','🦀','🦜','🦩','🐻','🐮','🐸','🦔','🐺','🦦','🦉','🦥','🦘','🐝','🐡','🦈','🐛','🐌'],
+  nature: ['🌺','🌸','🌻','🌹','🌿','🍀','🌴','🌵','🍁','🍄','🌊','⛰️','🌋','🌈','☄️','❄️','🌙','⭐','🌟','💫','🔥','💧','🌪️','🌤️','⚡','🌕','🪐','🌑','🌞','☁️','🌝','🍃'],
+  symbols: ['⚡','💎','🔮','💡','🎯','🎲','🎮','🎪','🎭','🎨','🎬','🎤','🏆','🔑','💌','📌','🧩','🪄','🔭','🧪','⚗️','🎸','🎺','🥁','🎷','🎻','🪘','🃏','🎰','🧲','🔩','⚙️']
+};
+
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function createGameState(deck, gridSize, emojiSet) {
+  return {
+    deck: deck.map((emoji, id) => ({
+      id,
+      emoji,
+      flipped: false,
+      matched: false,
+      gone: false,
+      owner: 0
+    })),
+    gridSize,
+    emojiSet,
+    totalPairs: deck.length / 2,
+    curPlayer: 1,
+    scores: [0, 0],
+    streaks: [0, 0],
+    flippedIndices: [],
+    locked: false,
+    matchedCount: 0,
+    moves: 0,
+    started: false
+  };
+}
+
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code = '';
@@ -20,8 +59,26 @@ function generateRoomCode() {
   return code;
 }
 
+function sendToAll(room, msg) {
+  room.players.forEach(p => {
+    if (p.readyState === WebSocket.OPEN) p.send(JSON.stringify(msg));
+  });
+}
+
+function broadcast(room, msg, excludeWs) {
+  room.players.forEach(p => {
+    if (p !== excludeWs && p.readyState === WebSocket.OPEN) p.send(JSON.stringify(msg));
+  });
+}
+
+function buildDeck(emojiSet, totalPairs) {
+  const set = EMOJI_SETS[emojiSet] || EMOJI_SETS.food;
+  const pool = shuffle([...set]).slice(0, totalPairs);
+  return shuffle([...pool, ...pool]);
+}
+
 wss.on('connection', (ws) => {
-  console.log('New client connected');
+  console.log('Client connected');
   let playerRoom = null;
   let playerIndex = -1;
 
@@ -30,93 +87,173 @@ wss.on('connection', (ws) => {
     try { msg = JSON.parse(message); } catch (e) { return; }
 
     switch (msg.type) {
-      case 'create_room':
+      case 'create_room': {
         const roomCode = generateRoomCode();
-        const room = { code: roomCode, players: [ws], gameStarted: false };
+        const room = { code: roomCode, players: [ws], gameState: null };
         rooms.set(roomCode, room);
         playerRoom = roomCode;
         playerIndex = 0;
         ws.send(JSON.stringify({ type: 'room_created', roomCode }));
         console.log(`Room created: ${roomCode}`);
         break;
+      }
 
-      case 'join_room':
-        const roomToJoin = rooms.get(msg.roomCode);
-        if (!roomToJoin) { ws.send(JSON.stringify({ type: 'error', msg: 'room_not_found' })); return; }
-        if (roomToJoin.players.length >= 2) { ws.send(JSON.stringify({ type: 'error', msg: 'room_full' })); return; }
-        roomToJoin.players.push(ws);
+      case 'join_room': {
+        const room = rooms.get(msg.roomCode);
+        if (!room) { ws.send(JSON.stringify({ type: 'error', msg: 'room_not_found' })); return; }
+        if (room.players.length >= 2) { ws.send(JSON.stringify({ type: 'error', msg: 'room_full' })); return; }
+        room.players.push(ws);
         playerRoom = msg.roomCode;
         playerIndex = 1;
         ws.send(JSON.stringify({ type: 'room_joined', roomCode: msg.roomCode }));
-        roomToJoin.players.forEach((p, idx) => {
-          p.send(JSON.stringify({ type: 'match_found', roomCode: msg.roomCode }));
-          p.send(JSON.stringify({ type: 'game_start', yourIndex: idx }));
-        });
-        roomToJoin.gameStarted = true;
-        break;
 
-      case 'find_match':
+        const gridSize = msg.gridSize || 4;
+        const emojiSet = msg.emojiSet || 'food';
+        const totalPairs = (gridSize * gridSize) / 2;
+        const deck = buildDeck(emojiSet, totalPairs);
+        const gs = createGameState(deck, gridSize, emojiSet);
+        room.gameState = gs;
+        sendToAll(room, { type: 'game_start' });
+        room.players[0].send(JSON.stringify({ type: 'full_state', state: gs, yourIndex: 0 }));
+        room.players[1].send(JSON.stringify({ type: 'full_state', state: gs, yourIndex: 1 }));
+        console.log(`Game started in room ${msg.roomCode}`);
+        break;
+      }
+
+      case 'find_match': {
         if (waitingPlayers.size > 0) {
           const opponent = Array.from(waitingPlayers)[0];
           waitingPlayers.delete(opponent);
-          const newRoomCode = generateRoomCode();
-          const newRoom = { code: newRoomCode, players: [opponent, ws], gameStarted: false };
-          rooms.set(newRoomCode, newRoom);
-          newRoom.players.forEach((p, idx) => {
-            p.send(JSON.stringify({ type: 'match_found', roomCode: newRoomCode }));
-            p.send(JSON.stringify({ type: 'game_start', yourIndex: idx }));
-          });
-          newRoom.gameStarted = true;
-          playerRoom = newRoomCode;
+          const roomCode = generateRoomCode();
+          const room = { code: roomCode, players: [opponent, ws], gameState: null };
+          rooms.set(roomCode, room);
+          
+          const gridSize = msg.gridSize || 4;
+          const emojiSet = msg.emojiSet || 'food';
+          const totalPairs = (gridSize * gridSize) / 2;
+          const deck = buildDeck(emojiSet, totalPairs);
+          const gs = createGameState(deck, gridSize, emojiSet);
+          room.gameState = gs;
+          
+          sendToAll(room, { type: 'game_start' });
+          opponent.send(JSON.stringify({ type: 'full_state', state: gs, yourIndex: 0 }));
+          ws.send(JSON.stringify({ type: 'full_state', state: gs, yourIndex: 1 }));
+          playerRoom = roomCode;
           playerIndex = 1;
+          console.log(`Match found, room: ${roomCode}`);
         } else {
           waitingPlayers.add(ws);
           ws.send(JSON.stringify({ type: 'searching' }));
         }
         break;
+      }
 
       case 'cancel_search':
         waitingPlayers.delete(ws);
         ws.send(JSON.stringify({ type: 'search_cancelled' }));
         break;
 
-      case 'game_state':
-        if (playerRoom && rooms.has(playerRoom)) {
-          const room = rooms.get(playerRoom);
-          room.players.forEach((p, idx) => {
-            if (idx !== playerIndex) {
-              p.send(JSON.stringify({ type: 'game_state', deck: msg.deck, gridSize: msg.gridSize, emojiSet: msg.emojiSet }));
-            }
-          });
-        }
-        break;
+      case 'flip_card': {
+        if (!playerRoom || !rooms.has(playerRoom)) return;
+        const room = rooms.get(playerRoom);
+        const gs = room.gameState;
+        if (!gs || gs.locked) return;
 
-      case 'flip_card':
-        if (playerRoom && rooms.has(playerRoom)) {
-          const room = rooms.get(playerRoom);
-          room.players.forEach((p, idx) => {
-            if (idx !== playerIndex) {
-              p.send(JSON.stringify({
-                type: 'flip_card',
-                cardIndex: msg.cardIndex,
-                phase: msg.phase,
-                secondIndex: msg.secondIndex,
-                scores: msg.scores,
-                curPlayer: msg.curPlayer
-              }));
-            }
-          });
-        }
-        break;
+        const currentPlayerIdx = gs.curPlayer === 1 ? 0 : 1;
+        if (currentPlayerIdx !== playerIndex) return;
 
-      case 'new_game':
-        if (playerRoom && rooms.has(playerRoom)) {
-          const room = rooms.get(playerRoom);
-          room.players.forEach((p, idx) => {
-            p.send(JSON.stringify({ type: 'new_game' }));
-          });
+        const cardIndex = msg.cardIndex;
+        const card = gs.deck[cardIndex];
+        if (!card || card.flipped || card.matched || card.gone) return;
+        if (gs.flippedIndices.length >= 2) return;
+
+        // Flip first card
+        card.flipped = true;
+        gs.flippedIndices.push(cardIndex);
+        broadcast(room, { type: 'card_flipped', cardIndex }, ws);
+
+        // If two cards flipped, check match
+        if (gs.flippedIndices.length === 2) {
+          gs.locked = true;
+          const [i1, i2] = gs.flippedIndices;
+          const c1 = gs.deck[i1];
+          const c2 = gs.deck[i2];
+          gs.moves++;
+
+          setTimeout(() => {
+            if (c1.emoji === c2.emoji) {
+              // MATCH!
+              c1.matched = true;
+              c2.matched = true;
+              c1.owner = gs.curPlayer;
+              c2.owner = gs.curPlayer;
+              gs.matchedCount++;
+              const pi = gs.curPlayer - 1;
+              gs.scores[pi]++;
+              gs.streaks[pi]++;
+              gs.streaks[1 - pi] = 0;
+
+              sendToAll(room, {
+                type: 'cards_matched',
+                i1, i2,
+                owner: gs.curPlayer,
+                scores: gs.scores,
+                curPlayer: gs.curPlayer,
+                matchedCount: gs.matchedCount
+              });
+
+              setTimeout(() => {
+                c1.gone = true;
+                c2.gone = true;
+                sendToAll(room, { type: 'cards_gone', indices: [i1, i2] });
+                
+                if (gs.matchedCount === gs.totalPairs) {
+                  sendToAll(room, { type: 'game_over', scores: gs.scores, moves: gs.moves });
+                }
+                
+                gs.flippedIndices = [];
+                gs.locked = false;
+              }, 400);
+
+            } else {
+              // MISMATCH
+              const pi = gs.curPlayer - 1;
+              gs.streaks[pi] = 0;
+
+              sendToAll(room, { type: 'cards_mismatch', i1, i2 });
+
+              setTimeout(() => {
+                c1.flipped = false;
+                c2.flipped = false;
+                gs.flippedIndices = [];
+                gs.locked = false;
+                gs.curPlayer = gs.curPlayer === 1 ? 2 : 1;
+
+                sendToAll(room, {
+                  type: 'turn_update',
+                  curPlayer: gs.curPlayer,
+                  scores: gs.scores,
+                  streaks: gs.streaks
+                });
+              }, 600);
+            }
+          }, 500);
         }
         break;
+      }
+
+      case 'new_game': {
+        if (!playerRoom || !rooms.has(playerRoom)) return;
+        const room = rooms.get(playerRoom);
+        const gs = room.gameState;
+        const gridSize = gs.gridSize;
+        const emojiSet = gs.emojiSet;
+        const totalPairs = (gridSize * gridSize) / 2;
+        const deck = buildDeck(emojiSet, totalPairs);
+        room.gameState = createGameState(deck, gridSize, emojiSet);
+        sendToAll(room, { type: 'full_state', state: room.gameState });
+        break;
+      }
     }
   });
 
@@ -125,16 +262,19 @@ wss.on('connection', (ws) => {
     waitingPlayers.delete(ws);
     if (playerRoom && rooms.has(playerRoom)) {
       const room = rooms.get(playerRoom);
-      room.players.forEach((p) => {
-        if (p !== ws && p.readyState === WebSocket.OPEN) {
-          p.send(JSON.stringify({ type: 'opponent_left' }));
-        }
-      });
-      rooms.delete(playerRoom);
+      broadcast(room, { type: 'opponent_left' }, ws);
+      if (room.players.every(p => p.readyState !== WebSocket.OPEN)) {
+        rooms.delete(playerRoom);
+      }
     }
+  });
+
+  ws.on('error', (err) => {
+    console.error('WebSocket error:', err);
+    waitingPlayers.delete(ws);
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`WebSocket server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
