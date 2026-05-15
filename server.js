@@ -1,3 +1,6 @@
+# ПОЛНЫЙ СКРИПТ СЕРВЕРА (server.js)
+
+```js
 const WebSocket = require('ws');
 const http = require('http');
 
@@ -43,6 +46,7 @@ function shuffle(array) {
 }
 
 function createDeck(gridSize) {
+
   const totalPairs = (gridSize * gridSize) / 2;
 
   const selected = shuffle([...EMOJIS]).slice(0, totalPairs);
@@ -72,12 +76,14 @@ function broadcast(room, data) {
 }
 
 wss.on('connection', (ws) => {
+
   console.log('Client connected');
 
   let playerRoom = null;
   let playerIndex = -1;
 
   ws.on('message', (message) => {
+
     let msg;
 
     try {
@@ -87,10 +93,6 @@ wss.on('connection', (ws) => {
     }
 
     switch (msg.type) {
-
-      // ========================
-      // CREATE ROOM
-      // ========================
 
       case 'create_room': {
 
@@ -125,14 +127,8 @@ wss.on('connection', (ws) => {
           roomCode
         });
 
-        console.log('Room created:', roomCode);
-
         break;
       }
-
-      // ========================
-      // JOIN ROOM
-      // ========================
 
       case 'join_room': {
 
@@ -143,7 +139,6 @@ wss.on('connection', (ws) => {
             type: 'error',
             msg: 'room_not_found'
           });
-
           return;
         }
 
@@ -152,7 +147,6 @@ wss.on('connection', (ws) => {
             type: 'error',
             msg: 'room_full'
           });
-
           return;
         }
 
@@ -161,8 +155,8 @@ wss.on('connection', (ws) => {
         playerRoom = msg.roomCode;
         playerIndex = 1;
 
-        room.gridSize = msg.gridSize || 4;
-        room.totalPairs = (room.gridSize * room.gridSize) / 2;
+        room.gridSize = 4;
+        room.totalPairs = 8;
 
         room.deck = createDeck(room.gridSize);
 
@@ -197,117 +191,10 @@ wss.on('connection', (ws) => {
               locked: room.locked
             }
           });
-
-        });
-
-        console.log('Game started:', room.code);
-
-        break;
-      }
-
-      // ========================
-      // FIND MATCH
-      // ========================
-
-      case 'find_match': {
-
-        if (waitingPlayers.size > 0) {
-
-          const opponent = Array.from(waitingPlayers)[0];
-
-          waitingPlayers.delete(opponent);
-
-          const roomCode = generateRoomCode();
-
-          const room = {
-            code: roomCode,
-            players: [opponent, ws],
-
-            gridSize: 4,
-            totalPairs: 8,
-
-            deck: createDeck(4),
-            flipped: [],
-
-            curPlayer: 1,
-            scores: [0, 0],
-            streaks: [0, 0],
-
-            matchedCount: 0,
-            moves: 0,
-            locked: false
-          };
-
-          rooms.set(roomCode, room);
-
-          room.players.forEach((player, idx) => {
-
-            send(player, {
-              type: 'match_found',
-              roomCode
-            });
-
-            send(player, {
-              type: 'game_start',
-              yourIndex: idx
-            });
-
-            send(player, {
-              type: 'full_state',
-
-              yourIndex: idx,
-
-              state: {
-                gridSize: room.gridSize,
-                totalPairs: room.totalPairs,
-                deck: room.deck,
-
-                curPlayer: room.curPlayer,
-                scores: room.scores,
-                streaks: room.streaks,
-
-                matchedCount: room.matchedCount,
-                moves: room.moves,
-                locked: room.locked
-              }
-            });
-
-          });
-
-          playerRoom = roomCode;
-          playerIndex = 1;
-
-        } else {
-
-          waitingPlayers.add(ws);
-
-          send(ws, {
-            type: 'searching'
-          });
-
-        }
-
-        break;
-      }
-
-      // ========================
-      // CANCEL SEARCH
-      // ========================
-
-      case 'cancel_search': {
-
-        waitingPlayers.delete(ws);
-
-        send(ws, {
-          type: 'search_cancelled'
         });
 
         break;
       }
-
-      // ========================
-      // FLIP CARD
-      // ========================
 
       case 'flip_card': {
 
@@ -324,6 +211,7 @@ wss.on('connection', (ws) => {
         const card = room.deck[index];
 
         if (!card) return;
+
         if (card.flipped || card.matched) return;
 
         card.flipped = true;
@@ -360,16 +248,11 @@ wss.on('connection', (ws) => {
 
           broadcast(room, {
             type: 'cards_matched',
-
             i1,
             i2,
-
             owner: playerIndex,
-
             scores: room.scores,
-
             curPlayer: room.curPlayer,
-
             matchedCount: room.matchedCount
           });
 
@@ -377,12 +260,10 @@ wss.on('connection', (ws) => {
           room.locked = false;
 
           if (room.matchedCount >= room.totalPairs) {
-
             broadcast(room, {
               type: 'game_over',
               scores: room.scores
             });
-
           }
 
         } else {
@@ -402,33 +283,23 @@ wss.on('connection', (ws) => {
 
             room.flipped = [];
 
-            room.curPlayer =
-              room.curPlayer === 1 ? 2 : 1;
+            room.curPlayer = room.curPlayer === 1 ? 2 : 1;
 
             room.locked = false;
 
             broadcast(room, {
               type: 'turn_update',
-
               curPlayer: room.curPlayer,
-
               scores: room.scores,
-
               streaks: room.streaks,
-
               hideCards: [i1, i2]
             });
 
           }, 1200);
-
         }
 
         break;
       }
-
-      // ========================
-      // NEW GAME
-      // ========================
 
       case 'new_game': {
 
@@ -470,19 +341,14 @@ wss.on('connection', (ws) => {
               locked: room.locked
             }
           });
-
         });
 
         break;
       }
-
     }
-
   });
 
   ws.on('close', () => {
-
-    console.log('Client disconnected');
 
     waitingPlayers.delete(ws);
 
@@ -496,20 +362,15 @@ wss.on('connection', (ws) => {
           player !== ws &&
           player.readyState === WebSocket.OPEN
         ) {
-
           send(player, {
             type: 'opponent_left'
           });
-
         }
-
       });
 
       rooms.delete(playerRoom);
     }
-
   });
-
 });
 
 server.listen(PORT, () => {
