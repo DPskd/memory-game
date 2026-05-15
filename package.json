@@ -1,7 +1,7 @@
 {
-  "name": "memory-game-server",
+  "name": "memory-pairs-server",
   "version": "1.0.0",
-  "description": "WebSocket server for memory game",
+  "description": "Memory pairs game WebSocket server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
